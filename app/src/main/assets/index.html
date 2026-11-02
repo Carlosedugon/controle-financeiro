@@ -224,7 +224,7 @@ function moneyC(v) { // compacto para eixos
   if (S.cfg.ocultar) return '•••';
   const a = Math.abs(v);
   if (a >= 1e6) return (v / 1e6).toFixed(1).replace('.', ',') + ' mi';
-  if (a >= 1e3) return (v / 1e3).toFixed(a >= 1e4 ? 0 : 1).replace('.', ',') + ' mil';
+  if (a >= 1e3) return String(+(v / 1e3).toFixed(a >= 1e4 ? 1 : 2)).replace('.', ',') + ' mil';
   return String(Math.round(v));
 }
 function pm(s) {
@@ -322,8 +322,22 @@ function normalize(d) {
   if (!d.cfg.veiculos || !d.cfg.veiculos.length) d.cfg.veiculos = b.cfg.veiculos;
   return d;
 }
-function load() { try { const t = localStorage.getItem(KEY); return t ? normalize(JSON.parse(t)) : null; } catch (e) { return null; } }
-function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Não foi possível salvar no aparelho'); } }
+// No app Android os dados vão para um arquivo interno (ponte nativa); o localStorage fica como cópia/fallback.
+const NATIVO = !!(window.Android && window.Android.saveData && window.Android.loadData);
+function load() {
+  let t = null;
+  try { if (NATIVO) t = window.Android.loadData(); } catch (e) { t = null; }
+  if (!t) { try { t = localStorage.getItem(KEY); } catch (e) { t = null; } }
+  try { return t ? normalize(JSON.parse(t)) : null; } catch (e) { return null; }
+}
+function save() {
+  const txt = JSON.stringify(S);
+  let ok = false;
+  try { if (NATIVO) ok = window.Android.saveData(txt) === true; } catch (e) { ok = false; }
+  try { localStorage.setItem(KEY, txt); if (!NATIVO) ok = true; } catch (e) {}
+  if (!ok) toast('Não foi possível salvar no aparelho');
+  return ok;
+}
 let S = load() || seed();
 
 const catById = id => S.cats.find(c => c.id === id);
@@ -727,6 +741,14 @@ VIEWS.inicio = function () {
   const cb = catBreakdown(md), totC = sum(cb, 'total');
   h += `<div class="card"><h3>Gastos por categoria — ${ymLabel(M)}</h3>${cb.length ? cb.map(c => catBarHTML(c, totC)).join('') : '<div class="empty">Nenhuma despesa neste mês.</div>'}</div>`;
 
+  // Empréstimos
+  const ativosL = S.tomados.filter(l => !loanInfo(l).quitado), abertosC = S.concedidos.filter(c => concInfo(c).saldo > 0);
+  h += `<div class="card"><h3>🏦 Empréstimos<span class="sp"></span><button class="lnk" data-act="go" data-v="emprestimos">Ver todos</button></h3>`;
+  if (!ativosL.length && !abertosC.length) h += `<div class="muted" style="font-size:14px;margin-bottom:10px">Nenhum empréstimo em aberto.</div>`;
+  h += `<div class="list">` + ativosL.map(l => { const i = loanInfo(l); return row({ic: '🏦', t: l.credor, s: `${i.parcPagas}/${l.nParc} pagas · próxima ${fmtDs(i.prox)}`, v: money(i.saldo), chip: chipSt(i.prox && i.prox < today() ? 'atrasado' : 'ativo'), act: 'openLoan', data: {id: l.id}}); }).join('')
+    + abertosC.map(c => { const i = concInfo(c); return row({ic: '🤝', t: c.pessoa, s: 'A receber' + (c.previsao ? ' até ' + fmtDs(c.previsao) : ''), v: money(i.saldo), vcls: 'pos', chip: chipSt(i.st), act: 'openConc', data: {id: c.id}}); }).join('') + `</div>`;
+  h += `<div class="btns" style="margin-top:8px"><button class="btn sec2" data-act="newLoan">+ Peguei</button><button class="btn sec2" data-act="newConc">+ Emprestei</button></div></div>`;
+
   // Carro
   const carro = carroRecords('mes', '', inst);
   if (S.cats.some(c => c.veiculo)) h += `<div class="card" data-act="go" data-v="carro"><h3>🚗 Gastos com carro no mês<span class="sp"></span><span class="lnk">Relatório</span></h3>
@@ -993,7 +1015,7 @@ VIEWS.config = function () {
     <div class="card"><h3>Backup</h3><div class="muted" style="font-size:13px;margin-bottom:10px">Os dados ficam só neste celular. Exporte de vez em quando para não perder nada se trocar de aparelho.</div>
     <div class="btns"><button class="btn" data-act="exportar">Exportar backup</button><button class="btn sec2" data-act="importar">Importar backup</button></div></div>
     <div class="card"><h3>Zona de perigo</h3><button class="btn danger full" data-act="resetAll">Apagar todos os dados</button></div>
-    <div class="muted" style="text-align:center;font-size:12px;margin:8px 0 20px">Minhas Finanças · v1.0</div>`;
+    <div class="muted" style="text-align:center;font-size:12px;margin:8px 0 20px">Minhas Finanças · v1.1</div>`;
 };
 
 /* =========================================================
@@ -1227,7 +1249,7 @@ function formResMov(tipo, m) {
 /* ---------- Empréstimos ---------- */
 function formLoan(l) {
   const isNew = !l;
-  l = l || {credor: '', valorOriginal: '', taxa: '', nParc: 12, valorParc: '', valorTotal: '', dataContr: today(), primeiroVenc: addMonthsDate(today(), 1), creditar: false, obs: ''};
+  l = l || {credor: '', valorOriginal: '', taxa: '', nParc: 12, valorParc: '', valorTotal: '', dataContr: today(), primeiroVenc: addMonthsDate(today(), 1), creditar: true, obs: ''};
   openForm({
     title: isNew ? 'Empréstimo que peguei' : 'Editar empréstimo', values: l,
     fields: [
@@ -1274,6 +1296,11 @@ function formLoanPg(l) {
     fields: [{type: 'hint', html: 'Pode ser a parcela cheia ou um pagamento parcial/antecipado.'}, {k: 'valor', label: 'Valor pago', type: 'money', req: true}, {k: 'data', label: 'Data', type: 'date', req: true}, {k: 'obs', label: 'Observação'}],
     onSave: v => { l.pagos.push(Object.assign({id: uid()}, v)); save(); render(); openLoan(l.id); toast('Pagamento registrado'); }
   });
+}
+function escolherEmprestimo() {
+  const at = S.tomados.filter(l => !loanInfo(l).quitado);
+  if (at.length === 1) { formLoanPg(at[0]); return; }
+  openSheet(`<div class="sh-head"><b>Qual empréstimo?</b><button data-act="closeSheet">✕</button></div><div class="list menu">${at.map(l => { const i = loanInfo(l); return row({ic: '🏦', t: l.credor, s: `Parcela ${i.parcPagas + 1}/${l.nParc} · ${money(l.valorParc)}`, v: money(i.saldo), act: 'pgLoanSel', data: {id: l.id}}); }).join('')}</div>`);
 }
 function formConc(c) {
   const isNew = !c;
@@ -1415,8 +1442,15 @@ const ACT = {
       ${row({ic: '🔻', t: 'Despesa', s: 'Conta, compra à vista, boleto…', v: '', act: 'fabDo', data: {v: 'd'}})}
       ${row({ic: '🔺', t: 'Receita', s: 'Salário, renda extra, freela…', v: '', act: 'fabDo', data: {v: 'r'}})}
       ${row({ic: '🚗', t: 'Gasto com o carro', s: 'Combustível, manutenção, IPVA…', v: '', act: 'fabDo', data: {v: 'carro'}})}
-      ${row({ic: '💳', t: 'Compra no cartão', s: 'À vista ou parcelada', v: '', act: 'fabDo', data: {v: 'cc'}})}</div>`),
-  fabDo: d => { if (d.v === 'd') formDesp(); else if (d.v === 'r') formRec(); else if (d.v === 'carro') ACT.newDespCarro(); else formCompra(null, V.name === 'cartao' ? V.param : null); },
+      ${row({ic: '💳', t: 'Compra no cartão', s: 'À vista ou parcelada', v: '', act: 'fabDo', data: {v: 'cc'}})}
+      ${row({ic: '🏦', t: 'Empréstimo que peguei', s: 'Banco, financeira ou pessoa', v: '', act: 'fabDo', data: {v: 'emp'}})}
+      ${row({ic: '🤝', t: 'Empréstimo que concedi', s: 'Dinheiro que emprestei a alguém', v: '', act: 'fabDo', data: {v: 'conc'}})}
+      ${S.tomados.some(l => !loanInfo(l).quitado) ? row({ic: '✅', t: 'Pagar parcela de empréstimo', s: 'Registrar pagamento', v: '', act: 'fabDo', data: {v: 'pgemp'}}) : ''}</div>`),
+  fabDo: d => {
+    if (d.v === 'd') formDesp(); else if (d.v === 'r') formRec(); else if (d.v === 'carro') ACT.newDespCarro();
+    else if (d.v === 'emp') formLoan(); else if (d.v === 'conc') formConc(); else if (d.v === 'pgemp') escolherEmprestimo();
+    else formCompra(null, V.name === 'cartao' ? V.param : null);
+  },
   newDespCarro: () => { const c = S.cats.find(x => x.veiculo); formDesp(null, c ? {cat: c.id, forma: 'Pix', veiculo: UI.carroVeic || S.cfg.veiculos[0].id} : {}); },
   lancTipo: d => { UI.lancTipo = d.v; UI.lancCat = ''; render(); },
   editDesp: d => { const x = S.despesas.find(y => y.id === d.id); if (x) formDesp(x); },
@@ -1434,7 +1468,7 @@ const ACT = {
   resMov: d => formResMov(d.v), resCfg: () => formResCfg(), editResMov: d => { const m = S.reserva.movs.find(x => x.id === d.id); if (m) formResMov(m.tipo, m); },
   usarMedia: d => { FORM.v.custoMensal = +d.v; drawForm(); },
   empTab: d => { UI.empTab = d.v; render(); },
-  newLoan: () => formLoan(), openLoan: d => { if (S.tomados.find(x => x.id === d.id)) openLoan(d.id); else go('emprestimos'); },
+  newLoan: () => formLoan(), pgLoanSel: d => formLoanPg(S.tomados.find(x => x.id === d.id)), openLoan: d => { if (S.tomados.find(x => x.id === d.id)) openLoan(d.id); else go('emprestimos'); },
   delLoanPg: d => { const l = S.tomados.find(x => x.id === d.id); l.pagos = l.pagos.filter(p => p.id !== d.pg); save(); render(); openLoan(l.id); toast('Pagamento excluído'); },
   newConc: () => formConc(), openConc: d => openConc(d.id),
   delConcRec: d => { const c = S.concedidos.find(x => x.id === d.id); c.recebs = c.recebs.filter(p => p.id !== d.pg); save(); render(); openConc(c.id); },

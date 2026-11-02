@@ -14,13 +14,17 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.OutputStream;
+import java.nio.file.Files;
 import java.nio.charset.StandardCharsets;
 
 /**
  * Minhas Finanças — app de controle financeiro.
  * Toda a interface fica em assets/index.html (funciona offline).
- * Os dados ficam no armazenamento local do WebView (localStorage) deste aparelho.
+ * Os dados ficam no arquivo interno files/dados.json (gravado pela ponte saveData),
+ * que não depende do armazenamento do WebView e sobrevive a atualizações do app.
  */
 public class MainActivity extends Activity {
 
@@ -76,6 +80,38 @@ public class MainActivity extends Activity {
 
     /** Ponte chamada pelo JavaScript para exportar o backup. */
     private class Ponte {
+        private final Object trava = new Object();
+
+        /** Grava todos os dados do app (JSON) de forma atômica. */
+        @JavascriptInterface
+        public boolean saveData(String json) {
+            synchronized (trava) {
+                File destino = new File(getFilesDir(), "dados.json");
+                File tmp = new File(getFilesDir(), "dados.json.tmp");
+                try (FileOutputStream os = new FileOutputStream(tmp)) {
+                    os.write(json.getBytes(StandardCharsets.UTF_8));
+                    os.getFD().sync();
+                } catch (Exception e) {
+                    return false;
+                }
+                return tmp.renameTo(destino);
+            }
+        }
+
+        /** Lê os dados salvos; devolve "" se ainda não houver nada. */
+        @JavascriptInterface
+        public String loadData() {
+            synchronized (trava) {
+                File f = new File(getFilesDir(), "dados.json");
+                if (!f.exists()) return "";
+                try {
+                    return new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+                } catch (Exception e) {
+                    return "";
+                }
+            }
+        }
+
         @JavascriptInterface
         public void saveFile(final String nome, final String conteudo) {
             runOnUiThread(() -> {
